@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>UK49 Pattern Generator (Simple)</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 18px; line-height: 1.35; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+    textarea, input { width: 100%; box-sizing: border-box; padding: 10px; border-radius: 8px; border: 1px solid #ccc; }
+    textarea { min-height: 130px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .checks { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+    button { width: 100%; padding: 12px; border: 0; border-radius: 10px; font-weight: 700; cursor: pointer; }
+    button:hover { filter: brightness(0.95); }
+    .muted { color: #666; font-size: 0.95rem; }
+    .out { white-space: pre-wrap; background: #f7f7f7; padding: 12px; border-radius: 10px; border: 1px solid #eee; }
+    .pill { display: inline-block; padding: 4px 10px; border: 1px solid #ddd; border-radius: 999px; margin: 4px 6px 0 0; }
+  </style>
+</head>
+<body>
+  <h2>UK49 Pattern Generator (Simple)</h2>
+  <p class="muted">
+    Paste historical draws + last 5 draws. Format is flexible, examples below.
+  </p>
+
+  <div class="card">
+    <h3>Pick how many balls to generate</h3>
+    <div class="checks">
+      <label><input type="checkbox" id="k3" checked> 3 balls</label>
+      <label><input type="checkbox" id="k4" checked> 4 balls</label>
+      <label><input type="checkbox" id="k5" checked> 5 balls</label>
+    </div>
+    <p class="muted">
+      Tip: If you only want one size, uncheck the others.
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>Date filter (optional)</h3>
+    <div class="row">
+      <div>
+        <label>From (YYYY-MM-DD)</label>
+        <input id="dateFrom" placeholder="2026-01-15" />
+      </div>
+      <div>
+        <label>To (YYYY-MM-DD)</label>
+        <input id="dateTo" placeholder="2026-01-21" />
+      </div>
+    </div>
+    <p class="muted">
+      If dates are missing in your data, the generator still works — it’ll just ignore the date filter.
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>Historical results (paste many draws)</h3>
+    <p class="muted">
+      One draw per line. Any of these are accepted:
+      <br>• <code>2026-01-15 lunch: 17 26 31 36 13 35</code>
+      <br>• <code>15/01/2026 - 17,26,31,36,13,35</code>
+      <br>• <code>17 26 31 36 13 35</code>
+    </p>
+    <textarea id="history" placeholder="Paste historical draws here..."></textarea>
+  </div>
+
+  <div class="card">
+    <h3>Last 5 draws (paste exactly 5 lines if possible)</h3>
+    <p class="muted">
+      Used to find “consistent” numbers and boost them.
+    </p>
+    <textarea id="last5" placeholder="Example:
+2026-01-21 tea: 17 26 36 13 35 43
+2026-01-21 lunch: 17 26 31 19 30 32
+..."></textarea>
+  </div>
+
+  <div class="card">
+    <h3>Generator settings</h3>
+    <div class="row">
+      <div>
+        <label>How many sets per size?</label>
+        <input id="setsPerSize" type="number" min="1" max="50" value="6" />
+      </div>
+      <div>
+        <label>How many “top hot” numbers to focus?</label>
+        <input id="topN" type="number" min="4" max="30" value="12" />
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <div>
+        <label>Consistency bonus (last 5 draws)</label>
+        <input id="consBonus" type="number" min="0" max="100" value="6" />
+      </div>
+      <div>
+        <label>Recency bonus (newer lines slightly higher)</label>
+        <input id="recencyBonus" type="number" min="0" max="10" value="1" />
+      </div>
+    </div>
+
+    <p class="muted">
+      Consistency = numbers repeating across the last 5 draws get extra score.
+      Recency bonus = later lines in history get a small boost.
+    </p>
+  </div>
+
+  <button id="genBtn">Generate</button>
+
+  <div class="card" style="margin-top:14px;">
+    <h3>Output</h3>
+    <div id="output" class="out">Paste data and press Generate.</div>
+  </div>
+
+<script>
+/**
+ * Parse date from a line (supports YYYY-MM-DD or DD/MM/YYYY).
+ * Returns ISO date string "YYYY-MM-DD" or null.
+ */
+function parseDateFromLine(line) {
+  const iso = line.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+
+  const dmy = line.match(/\b(\d{2})\/(\d{2})\/(20\d{2})\b/);
+  if (dmy) return `${dmy[3]}-${dmy[2]}-${dmy[1]}`;
+
+  return null;
+}
+
+/** Extract numbers 1..49 from a line */
+function extractNumbers(line) {
+  const nums = (line.match(/\b\d{1,2}\b/g) || [])
+    .map(n => parseInt(n, 10))
+    .filter(n => n >= 1 && n <= 49);
+  // de-dupe within one line
+  return [...new Set(nums)];
+}
+
+/** date in range helper */
+function inRange(dateStr, fromStr, toStr) {
+  if (!dateStr) return true; // if no date in line, don't block it
+  if (fromStr && dateStr < fromStr) return false;
+  if (toStr && dateStr > toStr) return false;
+  return true;
+}
+
+/** seeded-ish random from Math.random for simplicity */
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/**
+ * Build weighted “hotness” scores from history, with optional date filtering,
+ * plus a consistency bonus from the last 5 draws.
+ */
+function buildScores(historyLines, last5Lines, fromStr, toStr, consBonus, recencyBonus) {
+  const score = new Map();
+  const add = (n, v) => score.set(n, (score.get(n) || 0) + v);
+
+  // HISTORY: base frequency + small recency boost (later lines)
+  const filtered = historyLines
+    .map((line, idx) => ({ line: line.trim(), idx }))
+    .filter(x => x.line.length > 0)
+    .map(x => {
+      const date = parseDateFromLine(x.line);
+      const nums = extractNumbers(x.line);
+      return { ...x, date, nums };
+    })
+    .filter(x => x.nums.length > 0 && inRange(x.date, fromStr, toStr));
+
+  const maxIdx = Math.max(1, ...filtered.map(x => x.idx));
+  for (const item of filtered) {
+    const r = (item.idx / maxIdx) * recencyBonus; // 0..recencyBonus
+    for (const n of item.nums) add(n, 1 + r);
+  }
+
+  // LAST 5: add a bonus for numbers that repeat across these lines
+  const last = last5Lines
+    .map(l => l.trim())
+    .filter(l => l.length > 0)
+    .map(l => extractNumbers(l))
+    .filter(nums => nums.length > 0);
+
+  const lastCount = new Map();
+  for (const nums of last) {
+    for (const n of nums) lastCount.set(n, (lastCount.get(n) || 0) + 1);
+  }
+
+  // Consistency bonus: appears 2+ times in last 5 => extra
+  for (const [n, c] of lastCount.entries()) {
+    if (c >= 2) add(n, (c - 1) * consBonus);
+  }
+
+  return { score, filteredCount: filtered.length, lastCount };
+}
+
+/** pick top N numbers by score */
+function topNumbers(scoreMap, topN) {
+  const items = [...scoreMap.entries()]
+    .sort((a, b) => b[1] - a[1]);
+  return items.slice(0, topN);
+}
+
+/** Generate unique sets of size k from weighted top numbers */
+function generateSets(topList, k, howMany) {
+  // Expand weighted pool
+  const pool = [];
+  for (const [n, s] of topList) {
+    // weight cap so one number doesn't dominate too hard
+    const w = Math.max(1, Math.min(20, Math.round(s)));
+    for (let i = 0; i < w; i++) pool.push(n);
+  }
+
+  const unique = new Set();
+  const sets = [];
+
+  // helper to sample one set
+  const sampleSet = () => {
+    const picks = new Set();
+    // try multiple attempts to avoid duplicates
+    for (let tries = 0; tries < 2000 && picks.size < k; tries++) {
+      const n = pool[Math.floor(Math.random() * pool.length)];
+      picks.add(n);
+    }
+    return [...picks].sort((a,b)=>a-b);
+  };
+
+  let guard = 0;
+  while (sets.length < howMany && guard < 5000) {
+    guard++;
+    const setArr = sampleSet();
+    if (setArr.length !== k) continue;
+    const key = setArr.join("-");
+    if (unique.has(key)) continue;
+    unique.add(key);
+    sets.push(setArr);
+  }
+
+  return sets;
+}
+
+function formatOutput(topList, lastCountMap, setsByK, meta) {
+  const topPills = topList
+    .slice(0, 18)
+    .map(([n, s]) => `<span class="pill">${n} <span class="muted">(${s.toFixed(1)})</span></span>`)
+    .join("");
+
+  const consistent = [...lastCountMap.entries()]
+    .filter(([_, c]) => c >= 2)
+    .sort((a,b)=>b[1]-a[1])
+    .map(([n,c]) => `${n}(${c})`)
+    .join(", ") || "None detected (need repeats in last 5)";
+
+  let text = "";
+  text += `Used ${meta.filteredCount} historical lines in date range.\n`;
+  text += `Consistent numbers from last 5 (count>=2): ${consistent}\n\n`;
+  text += `Top weighted numbers:\n`;
+
+  // Plain list too
+  text += topList.slice(0, 20).map(([n,s], i)=> `${String(i+1).padStart(2,"0")}. ${n}  score=${s.toFixed(1)}`).join("\n");
+  text += `\n\nGenerated Sets:\n`;
+
+  for (const [k, sets] of Object.entries(setsByK)) {
+    text += `\n${k} balls:\n`;
+    for (const s of sets) text += `- ${s.join(" ")}\n`;
+  }
+
+  return { htmlTop: topPills, plain: text };
+}
+
+document.getElementById("genBtn").addEventListener("click", () => {
+  const historyText = document.getElementById("history").value;
+  const last5Text = document.getElementById("last5").value;
+
+  const historyLines = historyText.split("\n");
+  const last5Lines = last5Text.split("\n");
+
+  const fromStr = document.getElementById("dateFrom").value.trim() || null;
+  const toStr = document.getElementById("dateTo").value.trim() || null;
+
+  const setsPerSize = Math.max(1, Math.min(50, parseInt(document.getElementById("setsPerSize").value || "6", 10)));
+  const topN = Math.max(4, Math.min(30, parseInt(document.getElementById("topN").value || "12", 10)));
+  const consBonus = Math.max(0, Math.min(100, parseFloat(document.getElementById("consBonus").value || "6")));
+  const recencyBonus = Math.max(0, Math.min(10, parseFloat(document.getElementById("recencyBonus").value || "1")));
+
+  const kList = [];
+  if (document.getElementById("k3").checked) kList.push(3);
+  if (document.getElementById("k4").checked) kList.push(4);
+  if (document.getElementById("k5").checked) kList.push(5);
+
+  if (kList.length === 0) {
+    document.getElementById("output").textContent = "Please check at least one: 3 balls, 4 balls, or 5 balls.";
+    return;
+  }
+
+  const { score, filteredCount, lastCount } =
+    buildScores(historyLines, last5Lines, fromStr, toStr, consBonus, recencyBonus);
+
+  if (score.size === 0) {
+    document.getElementById("output").textContent =
+      "No valid numbers found. Make sure your pasted lines include numbers 1-49.";
+    return;
+  }
+
+  const topList = topNumbers(score, topN);
+
+  // Generate sets per K
+  const setsByK = {};
+  for (const k of kList) {
+    setsByK[k] = generateSets(topList, k, setsPerSize);
+  }
+
+  const formatted = formatOutput(topList, lastCount, setsByK, { filteredCount });
+
+  // Render
+  document.getElementById("output").innerHTML =
+    `${formatted.plain}\n\nTop quick view:\n${formatted.htmlTop}`;
+});
+</script>
+</body>
+</html>
